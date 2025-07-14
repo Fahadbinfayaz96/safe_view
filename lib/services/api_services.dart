@@ -28,37 +28,7 @@ class ApiService {
     return header;
   }
 
-  // static const String apiKey = 'AIzaSyD64WNmA9gaPBAoDkEFK2MftNcsYbGvgp0';
-  // static const String baseUrl = 'https://www.googleapis.com/youtube/v3';
-
-  // static Future<List<YouTubeVideo>> searchVideos(String query) async {
-  //   final url =
-  //       '$baseUrl/search?part=snippet&q=$query&type=video&maxResults=10&key=$apiKey';
-
-  //   final response = await http.get(Uri.parse(url));
-
-  //   try {
-  //     if (response.statusCode == 200) {
-  //       final data = json.decode(response.body);
-  //       final items = data['items'] as List;
-  //       return items.map((item) {
-  //         final snippet = item['snippet'];
-  //         return YouTubeVideo(
-  //           title: snippet['title'],
-  //           thumbnailUrl: snippet['thumbnails']['high']['url'],
-  //           videoId: item['id']['videoId'],
-  //         );
-  //       }).toList();
-  //     } else {
-  //       final error = json.decode(response.body);
-  //       final errorMessage = error['error']?['message'] ?? 'Unknown error';
-  //       throw Exception('YouTube API error: $errorMessage');
-  //     }
-  //   } catch (e) {
-  //     log("e.......$e");
-  //     throw Exception(e);
-  //   }
-  // }
+ 
 
   Future<ApiResponse<GenerateCodeModel>> generateCodeService({
     required String childDeviceId,
@@ -112,12 +82,12 @@ class ApiService {
     required String deviceId,
   }) async {
     final url = Uri.parse(ApiUrls.pairingStatusUrl(deviceId: deviceId));
-    log("device Id  $deviceId");
+ 
     final response = await http.get(
       url,
       headers: header,
     );
-    log("pairing response ${response.body}");
+
     if (response.statusCode == 200) {
       final decodedResponse = jsonDecode(response.body);
 
@@ -273,7 +243,7 @@ class ApiService {
       url,
       headers: header,
     );
-    log("response:::::::${response.body}");
+
     if (response.statusCode == 200) {
        final List decodedResponse = jsonDecode(response.body);
 
@@ -289,11 +259,4 @@ class ApiService {
   }
 }
 
-// class YouTubeVideo {
-//   final String title;
-//   final String thumbnailUrl;
-//   final String videoId;
 
-//   YouTubeVideo(
-//       {required this.title, required this.thumbnailUrl, required this.videoId});
-// }
