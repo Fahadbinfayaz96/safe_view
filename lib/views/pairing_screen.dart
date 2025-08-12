@@ -60,6 +60,7 @@ class _PairingScreenState extends State<PairingScreen> {
       ),
       body: BlocListener<GenerateCodeCubit, GenerateCodeState>(
         listener: (context, state) {
+          log("state..........$state");
           if (state is CodeGeneratedState &&
               ModalRoute.of(context)?.isCurrent == true) {
             Navigator.push(

@@ -2,9 +2,14 @@ import 'package:flutter/material.dart';
 
 class AppColors {
   static const Color blue = Color(0xFF1273EB);
-
+ static const Color lightBlue0 = Color.fromARGB(255, 241, 244, 255);
   static const Color lightBlue1 = Color(0xFFDBE7FF);
    static const Color lightBlue2 = Color(0xFFC8D9FF);
+     static const Color lightYellow = Color.fromARGB(255, 255, 234, 150);
+       static const Color goldenYellow = Color(0xFFFFB627);
+
+     
+  static const Color darkBrown = Color.fromARGB(255, 98, 69, 58);
 static const Color lightBlue3 = Color.fromARGB(255, 172, 194, 249);
   static const Color lavenderTrust = Color(0xFF836DF2);
   static const Color softRed = Color(0xFFF25757);

@@ -7,6 +7,8 @@ import 'package:safe_view/blocs/pairing_status_cubit/pairing_status_cubit.dart';
 import 'package:safe_view/views/child_home_screen.dart';
 import 'package:safe_view/views/pairing_screen.dart';
 import 'package:safe_view/widgets/background_gradient_color_wiget.dart';
+import 'package:safe_view/widgets/bottom_navigation_bar.dart';
+import 'package:safe_view/widgets/jumping_dot_progress_indicator.dart';
 import 'package:safe_view/widgets/text_wiget.dart';
 import 'dart:async';
 
@@ -25,7 +27,7 @@ class GenerateCodeScreen extends StatefulWidget {
 }
 
 class _GenerateCodeScreenState extends State<GenerateCodeScreen> {
-  Duration remainingTime = const Duration(minutes: 10);
+  Duration remainingTime = const Duration(seconds: 10);
   Timer? countdownTimer;
   Timer? statusCheckTimer;
   String? currentCode;
@@ -41,7 +43,7 @@ class _GenerateCodeScreenState extends State<GenerateCodeScreen> {
     BlocProvider.of<PairingStatusCubit>(context)
         .getPairingStatus(deviceId: widget.childDeviceId);
 
-    statusCheckTimer = Timer.periodic(const Duration(seconds: 10), (timer) {
+    statusCheckTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
       BlocProvider.of<PairingStatusCubit>(context)
           .getPairingStatus(deviceId: widget.childDeviceId);
     });
@@ -84,7 +86,7 @@ class _GenerateCodeScreenState extends State<GenerateCodeScreen> {
               if (state is CodeGeneratedState) {
                 setState(() {
                   currentCode = state.generateCode.code.toString();
-                  remainingTime = const Duration(minutes: 10);
+                  remainingTime = const Duration(seconds: 10);
                   countdownTimer?.cancel();
                   startCountdown();
                 });
@@ -93,13 +95,19 @@ class _GenerateCodeScreenState extends State<GenerateCodeScreen> {
           ),
           BlocListener<PairingStatusCubit, PairingStatusState>(
             listener: (context, state) {
-              log("state...........$state");
               if (state is PairingStatusLoadedState) {
                 if (state.pairingStatus.role == "child" &&
                     state.pairingStatus.isVerified == true) {
                   Navigator.pushReplacement(
                     context,
-                    MaterialPageRoute(builder: (_) =>  ChildHomeScreen(childDeviceId: widget.childDeviceId,)),
+                    MaterialPageRoute(
+                        builder: (_) =>
+                            ChildHomeScreen(childDeviceId: widget.childDeviceId)
+                        // PersistenBottomNavBarWiget(
+                        //       deviceId: widget.childDeviceId,
+                        //       isParent: false,
+                        //     )
+                        ),
                   );
                 }
               } else if (state is PairingStatusErrorState) {
@@ -142,19 +150,30 @@ class _GenerateCodeScreenState extends State<GenerateCodeScreen> {
                 text: "Expires in $timeText",
               ),
               const SizedBox(height: 16),
-              TextButton.icon(
-                onPressed: () async {
-                  await BlocProvider.of<GenerateCodeCubit>(context)
-                      .generateCode(
-                          childDeviceId: widget.childDeviceId.toString());
-                },
-                icon: const Icon(
-                  Icons.refresh,
-                  color: AppColors.black,
+              if (timeText == "00:00") ...[
+                BlocBuilder<GenerateCodeCubit, GenerateCodeState>(
+                  builder: (context, state) {
+                    bool isLoading =
+                        state is GenerateCodeLoadingState ? true : false;
+                    return isLoading
+                        ? const JumpingDots()
+                        : TextButton.icon(
+                            onPressed: () async {
+                              await BlocProvider.of<GenerateCodeCubit>(context)
+                                  .generateCode(
+                                      childDeviceId:
+                                          widget.childDeviceId.toString());
+                            },
+                            icon: const Icon(
+                              Icons.refresh,
+                              color: AppColors.black,
+                            ),
+                            label: TextWidget(text: "Regenerate Code"),
+                          );
+                  },
                 ),
-                label: TextWidget(text: "Regenerate Code"),
-              ),
-              const SizedBox(height: 40),
+                const SizedBox(height: 40),
+              ],
               Container(
                 width: double.infinity,
                 padding:

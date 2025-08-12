@@ -8,15 +8,23 @@ class GetKidsActivitiesCubit extends Cubit<GetKidsActivitiesState> {
   ApiService apiService;
   GetKidsActivitiesCubit(this.apiService)
       : super(GetKidsActivitiesLoadingState());
-  Future getKidsActivities({required String childDeviceId}) async {
+  Future getKidsActivities(
+      {required String childDeviceId, bool isFromSocket = false}) async {
     try {
-      emit(GetKidsActivitiesLoadingState());
+      if (!isFromSocket) {
+        emit(GetKidsActivitiesLoadingState());
+      }
+
       final data = await apiService.GetKidsActivitiesService(
           childDeviceId: childDeviceId);
-      if (data.data != null && data.error == false) {
+          log("data.......${data.data} ${data.data == null || data.data!.isEmpty}");
+      if (data.data != null && data.data!.isNotEmpty && data.error == false) {
         emit(GetKidsActivitiesLoadedState(getKidsActivities: data.data!));
+      } else if ((data.data == null || data.data!.isEmpty) && data.error == false) {
+      emit(const GetKidsActivitiesEmptyState(emptyMessage: "No activities found"));
       } else {
-        emit(const GetKidsActivitiesErrorState(errorMessage: "Something went wrong"));
+        emit(const GetKidsActivitiesErrorState(
+            errorMessage: "Something went wrong"));
       }
     } catch (e) {
       log("e..........$e");

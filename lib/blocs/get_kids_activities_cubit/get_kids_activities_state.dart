@@ -20,6 +20,14 @@ class GetKidsActivitiesState extends Equatable {
   List<Object> get props => [getKidsActivities];
   
  }
+  class GetKidsActivitiesEmptyState extends GetKidsActivitiesState {
+  final String emptyMessage;
+
+  const GetKidsActivitiesEmptyState({required this.emptyMessage});
+  @override
+
+  List<Object> get props => [emptyMessage];
+ }
  class GetKidsActivitiesErrorState extends GetKidsActivitiesState {
   final String errorMessage;
 

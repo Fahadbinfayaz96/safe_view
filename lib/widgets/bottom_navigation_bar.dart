@@ -1,22 +1,33 @@
+import 'dart:io';
 import 'dart:developer';
 
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:persistent_bottom_nav_bar/persistent_bottom_nav_bar.dart';
 import 'package:safe_view/views/parent_home_screen.dart';
+import 'package:safe_view/views/parent_profile_screen.dart';
 import 'package:safe_view/views/recent_child_activities.dart';
 
 import '../untilities/app_colors.dart' show AppColors;
 
 class PersistenBottomNavBarWiget extends StatefulWidget {
-    final String parentDeviceId;
-  const PersistenBottomNavBarWiget({super.key,required this.parentDeviceId});
+  final String deviceId;
+  final bool isParent;
+  final bool isPinSet;
+  final getParentProfileModel;
+  const PersistenBottomNavBarWiget(
+      {super.key,
+      required this.deviceId,
+      required this.isParent,
+      required this.isPinSet,
+      required this.getParentProfileModel});
 
   @override
-  State<PersistenBottomNavBarWiget> createState() => _PersistenBottomNavBarWigetState();
+  State<PersistenBottomNavBarWiget> createState() =>
+      _PersistenBottomNavBarWigetState();
 }
 
-class _PersistenBottomNavBarWigetState extends State<PersistenBottomNavBarWiget> {
+class _PersistenBottomNavBarWigetState
+    extends State<PersistenBottomNavBarWiget> {
   late PersistentTabController controller;
 
   List<PersistentBottomNavBarItem> _navBarsItems() {
@@ -28,32 +39,44 @@ class _PersistenBottomNavBarWigetState extends State<PersistenBottomNavBarWiget>
         title: ("Home"),
         activeColorPrimary: AppColors.black,
         inactiveColorPrimary: AppColors.charcoalGrey.withOpacity(.6),
-     
       ),
       PersistentBottomNavBarItem(
         icon: const Icon(
           Icons.history,
         ),
-        title: ("Recent History"),
+        title: ("History"),
         activeColorPrimary: AppColors.black,
         inactiveColorPrimary: AppColors.charcoalGrey.withOpacity(.6),
-       
+      ),
+      PersistentBottomNavBarItem(
+        icon: const Icon(
+          Icons.person,
+        ),
+        title: ("Profile"),
+        activeColorPrimary: AppColors.black,
+        inactiveColorPrimary: AppColors.charcoalGrey.withOpacity(.6),
       ),
     ];
   }
 
   List<Widget> _buildScreens() {
-     log("message ${controller.index}");
     return [
-       ParentHomeScreen(parentDeviceId:  widget.parentDeviceId,),
-       RecentChildActivities(parentDeviceId: widget.parentDeviceId,),
+      ParentHomeScreen(
+        parentDeviceId: widget.deviceId,
+        isPinSet: widget.isPinSet,
+        getParentProfileModel: widget.getParentProfileModel,
+      ),
+      RecentChildActivities(
+        parentDeviceId: widget.deviceId,
+      ),
+      ParentProfileScreen(parentDeviceId: widget.deviceId)
     ];
   }
 
   @override
   void initState() {
     controller = PersistentTabController(initialIndex: 0);
-   log("inside init of bottom navigation controll");
+
     super.initState();
   }
 
@@ -65,18 +88,17 @@ class _PersistenBottomNavBarWigetState extends State<PersistenBottomNavBarWiget>
       screens: _buildScreens(),
       items: _navBarsItems(),
       handleAndroidBackButtonPress: true,
-      resizeToAvoidBottomInset: true,
       stateManagement: true,
       hideNavigationBarWhenKeyboardAppears: true,
       popBehaviorOnSelectedNavBarItemPress: PopBehavior.all,
-      padding: const EdgeInsets.only(top: 8),
+      padding: EdgeInsets.only(top: 8, bottom: Platform.isAndroid ? 8 : 0),
       backgroundColor: AppColors.lightBlue2,
       isVisible: true,
       decoration: const NavBarDecoration(
           boxShadow: [BoxShadow(color: AppColors.lightBlue2, spreadRadius: 1)]),
       confineToSafeArea: true,
-      navBarHeight: 55,
-      navBarStyle: NavBarStyle.style6,
+      navBarHeight: Platform.isAndroid ? 75 : 55,
+      navBarStyle: NavBarStyle.style1,
     );
   }
 }

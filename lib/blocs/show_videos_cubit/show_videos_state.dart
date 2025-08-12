@@ -18,6 +18,24 @@ class ShowVideosState extends Equatable {
   List<Object> get props => [showVideos];
  }
 
+
+ class ShowVideosEmptyState extends ShowVideosState {
+  final String emptyMessage;
+
+  const ShowVideosEmptyState({required this.emptyMessage});
+  @override
+
+  List<Object> get props => [emptyMessage];
+ }
+
+  class ChildSettingsUnsetState extends ShowVideosState {
+  final String validationMessage;
+
+  const ChildSettingsUnsetState({required this.validationMessage});
+  @override
+
+  List<Object> get props => [validationMessage];
+ }
  class ShowVideosErrorState extends ShowVideosState {
   final String errorMessage;
 

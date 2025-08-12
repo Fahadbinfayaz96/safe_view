@@ -19,19 +19,19 @@ class TextWidget extends StatelessWidget {
       this.fontWeight,
       this.textOverflow,
       this.maxLines,
-      this.textAlignment,this.letterSpacing});
+      this.textAlignment,
+      this.letterSpacing});
 
   @override
   Widget build(BuildContext context) {
     return Text(
       text,
       style: TextStyle(
-        color: textColor ?? AppColors.black,
-        fontSize: fontSize ?? 16,
-        fontWeight: fontWeight,
-        letterSpacing: letterSpacing
-      ),
-      
+          color: textColor ?? AppColors.black,
+          fontSize: fontSize ?? 16,
+          fontWeight: fontWeight,
+          letterSpacing: letterSpacing,
+          decoration: TextDecoration.none),
       maxLines: maxLines ?? 5,
       textAlign: textAlignment,
       overflow: textOverflow ?? TextOverflow.clip,

@@ -1,3 +1,5 @@
+import 'dart:developer';
+
 import 'package:bloc/bloc.dart';
 import 'package:safe_view/services/api_services.dart';
 
@@ -9,13 +11,14 @@ class VerifyCodeCubit extends Cubit<VerifyCodeState> {
   Future verifyCode(
       {required String parentDeviceId, required String pairingCode}) async {
     try {
+      print("parentDeviceId in VerifyCodeCubit........${parentDeviceId}");
       emit(VerifyCodeLoadingState());
       final data = await apiService.verifyCodeService(
           parentDeviceId: parentDeviceId, pairingCode: pairingCode);
       if (data.data != null && data.error == false) {
         emit(VerifiedCodeState(verifyCode: data.data!));
       } else {
-        emit(VerifyCodeErrorState(errorMessage: data.errorMessage.toString() ));
+        emit(VerifyCodeErrorState(errorMessage: data.errorMessage.toString()));
       }
     } catch (e) {
       emit(VerifyCodeErrorState(errorMessage: e.toString()));

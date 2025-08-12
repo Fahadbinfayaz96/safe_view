@@ -9,9 +9,12 @@ class GetContentFiltersCubit extends Cubit<GetContentFiltersState> {
   ApiService apiService;
   GetContentFiltersCubit(this.apiService)
       : super(GetContentFiltersLoadingState());
-  Future getContentFilter({required String childDeviceId}) async {
+  Future getContentFilter({required String childDeviceId,bool fromSocket=false}) async {
     try {
+      if(!fromSocket){
       emit(GetContentFiltersLoadingState());
+      }
+
       final data = await apiService.getContentFilterService(
           childDeviceId: childDeviceId);
       if (data.data != null && data.error == false) {

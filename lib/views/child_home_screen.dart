@@ -1,25 +1,27 @@
 import 'dart:async';
 import 'dart:developer';
-
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:icons_plus/icons_plus.dart';
 import 'package:pull_to_refresh/pull_to_refresh.dart';
 import 'package:safe_view/blocs/get_content_filters_cubit/get_content_filters_cubit.dart';
 import 'package:safe_view/blocs/get_content_filters_cubit/get_content_filters_state.dart';
+import 'package:safe_view/blocs/get_remaining_time_cubit/get_remaining_time_cubit.dart';
+import 'package:safe_view/blocs/get_remaining_time_cubit/get_remaining_time_state.dart';
 import 'package:safe_view/blocs/show_videos_cubit/show_videos_cubit.dart';
-import 'package:safe_view/main.dart';
 import 'package:safe_view/models/get_content_filter_model.dart';
+import 'package:safe_view/models/get_remaining_time_model.dart';
 import 'package:safe_view/untilities/app_colors.dart';
-import 'package:safe_view/widgets/background_gradient_color_wiget.dart';
+import 'package:safe_view/views/pairing_screen.dart';
 import 'package:safe_view/widgets/jumping_dot_progress_indicator.dart';
 import 'package:safe_view/widgets/retry_widget.dart';
 import 'package:safe_view/widgets/text_wiget.dart';
 import 'package:safe_view/widgets/video%20player.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
-import '../blocs/send_kids_activities_cubit/send_kids_activities_cubit.dart' show SendKidsActivitiesCubit;
 import '../blocs/show_videos_cubit/show_videos_state.dart';
+import '../models/show_videos_model.dart';
 
 class ChildHomeScreen extends StatefulWidget {
   final String childDeviceId;
@@ -30,23 +32,28 @@ class ChildHomeScreen extends StatefulWidget {
 }
 
 class _ChildHomeScreenState extends State<ChildHomeScreen>
-    with WidgetsBindingObserver {
+    with WidgetsBindingObserver, TickerProviderStateMixin {
   bool isSearching = false;
   TextEditingController searchController = TextEditingController();
   String currentSearchTerm = '';
   bool isLoading = false;
   GetContentFilterModel? filters;
-  List? videos;
+  GetRemainingTimeModel? result;
+  List<Videos>? videos;
   late IO.Socket socket;
-  int? remainingSeconds;
   String timerDisplay = "Connecting...";
   bool isLimitReached = false;
-  Timer? localTimer;
-
-  bool isSocketConnected = false;
-
+  bool isLockDialogShowing = false;
+  final FlutterSecureStorage secureStorage = const FlutterSecureStorage();
+  int currentPage = 1;
+  bool hasMore = true;
   final RefreshController _refreshController =
       RefreshController(initialRefresh: false);
+  bool wasLockedByTimeLimit = false;
+  bool noSettingsDialogShowing = false;
+  Duration? remainingTime;
+  Timer? countdownTimer;
+  bool isTimerRunning = false;
 
   @override
   void initState() {
@@ -57,17 +64,7 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     loadVideos();
   }
 
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused ||
-        state == AppLifecycleState.inactive) {
-      stopLocalTimer();
-    } else if (state == AppLifecycleState.resumed && !isLimitReached) {
-      fetchRemainingTimeFromServer();
-    }
-  }
-
   void initializeSocket() {
-    log("_initializeSocket");
     socket = IO.io(
       'https://safeview-backend.onrender.com',
       IO.OptionBuilder()
@@ -79,25 +76,128 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     socket.connect();
 
     socket.onConnect((_) {
-      log("Emitting join for device: ${widget.childDeviceId}");
       if (!mounted) return;
-      setState(() => isSocketConnected = true);
       socket.emit("join", widget.childDeviceId);
+      if (remainingTime == null) {
+        // Only fetch if no time exists
+        Future.delayed(const Duration(seconds: 3), () {
+          if (mounted && remainingTime == null) {
+            fetchRemainingTimeFromServer();
+          }
+        });
+      }
+      log("connected.......");
     });
 
     socket.on("limitReached", (data) {
       if (!mounted) return;
-      setState(() => isLimitReached = true);
-      log("⏰ Limit Reached: ${data['message']}");
-      BlocProvider.of<GetContentFiltersCubit>(context)
-          .getContentFilter(childDeviceId: widget.childDeviceId);
+      log("Limit reached received");
+      setState(() {
+        isLimitReached = true;
+        wasLockedByTimeLimit = true;
+        remainingTime = Duration.zero;
+      });
+      showLockDialogIfNotShown();
+    });
 
-      stopLocalTimer();
-      isChildDeviceLocked();
+    socket.on("contentUpdated", (data) async {
+      if (!mounted) return;
+
+      log('📢 ContentUpdate Received: ${data.toString()}');
+
+      try {
+        final newFilters = GetContentFilterModel.fromJson(data['settings']);
+
+        final bool wasLocked = filters?.isLocked ?? false;
+        final bool isNowLocked = newFilters.isLocked ?? false;
+        final bool timeLimitChanged =
+            filters?.screenTimeLimitMins != newFilters.screenTimeLimitMins;
+
+        setState(() => filters = newFilters);
+
+        // Handle lock state changes
+        if (isNowLocked) {
+          log('🔒 Lock State Changed: LOCKED');
+          setState(() {
+            remainingTime = Duration.zero;
+            isLimitReached = true;
+          });
+          showLockDialogIfNotShown();
+        } else if (wasLocked && !isNowLocked) {
+          setState(() => isLimitReached = false);
+
+          if (isLockDialogShowing && mounted) {
+            Navigator.of(context, rootNavigator: true).pop();
+            isLockDialogShowing = false;
+          }
+        }
+        setState(() {
+          currentPage = 1;
+        });
+
+        if (mounted) {
+          log('🔄 Refreshing content...');
+          await BlocProvider.of<ShowVideosCubit>(context).showVideos(
+              childDeviceId: widget.childDeviceId,
+              searchKey: "",
+              pageNumber: 1,
+              fromSocket: true);
+
+          if (timeLimitChanged) {
+            fetchRemainingTimeFromServer();
+          }
+
+          if (!isNowLocked && wasLocked) {
+            // Just ensure timer is running (don't reset it)
+            if (remainingTime == Duration.zero) {
+              fetchRemainingTimeFromServer();
+            }
+          }
+        }
+      } catch (e) {
+        log('❌ Error processing contentUpdated: $e');
+      }
+    });
+
+    socket.on('screenTime', (data) {
+      if (!mounted) return;
+
+      final int? remainingSeconds = data['remaining'];
+
+      if (remainingSeconds != null) {
+        countdownTimer?.cancel();
+
+        setState(() {
+          remainingTime = Duration(seconds: remainingSeconds);
+          isLimitReached = remainingSeconds <= 0;
+        });
+
+        if (remainingSeconds <= 0) {
+          showLockDialogIfNotShown();
+        } else {
+          // Always restart local countdown
+          _startTimer();
+        }
+      }
+    });
+
+    socket.on("unlinked", (data) async {
+      if (data['role'] == 'child') {
+        await const FlutterSecureStorage().delete(key: "sessionStartTime");
+        if (mounted) {
+          Navigator.of(context, rootNavigator: true).pushAndRemoveUntil(
+            MaterialPageRoute(
+              builder: (context) {
+                return const PairingScreen();
+              },
+            ),
+            (_) => false,
+          );
+        }
+      }
     });
 
     socket.onDisconnect((_) {
-      log("❌ Socket disconnected!");
       if (mounted) {
         Future.delayed(const Duration(seconds: 5), () {
           if (mounted) socket.connect();
@@ -106,7 +206,6 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     });
 
     socket.onConnectError((err) {
-      log("⚠️ Socket error: $err");
       if (mounted) {
         setState(() {
           timerDisplay = "Connection Error";
@@ -119,48 +218,105 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
     });
   }
 
-  void fetchRemainingTimeFromServer() async {
-    if (filters?.screenTimeLimitMins != null) {
+  void _startTimer({bool isFallback = false}) {
+    countdownTimer?.cancel();
+
+    if (!isFallback) return; // Only run as fallback
+
+    log("Starting fallback timer with ${remainingTime?.inSeconds} seconds");
+    isTimerRunning = true;
+
+    countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+
       setState(() {
-        remainingSeconds = filters!.screenTimeLimitMins! * 60;
+        if (remainingTime != null && remainingTime! > Duration.zero) {
+          remainingTime = remainingTime! - const Duration(seconds: 1);
+        }
       });
-      startLocalTimer();
-    } else {}
-  }
 
-  void startLocalTimer() {
-    stopLocalTimer();
-    localTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (remainingSeconds == null || isLimitReached) return;
-
-      if (remainingSeconds! <= 1) {
-        socket.emit("timeExpired", widget.childDeviceId);
-        setState(() => remainingSeconds = 0);
-        //  log("Filterrrrrr ${filters?.isLocked}");
-        // stopLocalTimer();
-        // isChildDeviceLocked();
-      } else {
-        setState(() {
-          remainingSeconds = remainingSeconds! - 1;
-        });
+      if (remainingTime != null && remainingTime! <= Duration.zero) {
+        timer.cancel();
+        _handleTimeLimitReached();
       }
     });
   }
 
-  void stopLocalTimer() {
-    localTimer?.cancel();
+  void _handleTimeLimitReached() {
+    log("Time limit reached");
+    countdownTimer?.cancel();
+    isTimerRunning = false;
+    setState(() {
+      isLimitReached = true;
+      remainingTime = Duration.zero;
+    });
+    showLockDialogIfNotShown();
+
+    // Only emit if socket is connected
+    if (socket.connected) {
+      socket.emit("limitReached", widget.childDeviceId);
+    }
+  }
+
+  void fetchRemainingTimeFromServer() async {
+    log("Fetching remaining time from server");
+    try {
+      final response = await BlocProvider.of<GetRemainingTimeCubit>(context)
+          .getRemainingTime(childDeviceId: widget.childDeviceId);
+
+      if (response is GetRemainingTimeLoadedState) {
+        final remainingMins = response.getRemainingTimeModel.remainingTimeMins;
+        if (remainingMins != null) {
+          log("Received remaining time from server: $remainingMins minutes");
+          setState(() {
+            remainingTime = Duration(minutes: remainingMins);
+            isLimitReached = remainingMins <= 0;
+          });
+
+          if (remainingMins <= 0) {
+            _handleTimeLimitReached();
+          } else if (!socket.connected) {
+            _startTimer(isFallback: true);
+          }
+        }
+      }
+    } catch (e) {
+      log("Error fetching remaining time: $e");
+      // Fallback to filters if available
+      if (filters?.screenTimeLimitMins != null && !socket.connected) {
+        setState(() {
+          remainingTime = Duration(minutes: filters!.screenTimeLimitMins!);
+        });
+        _startTimer(isFallback: true);
+      }
+    }
+  }
+
+  void showLockDialogIfNotShown() {
+    if (!isLockDialogShowing) {
+      isLockDialogShowing = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) isChildDeviceLocked();
+      });
+    }
   }
 
   void loadVideos({String? searchTerm}) {
     BlocProvider.of<ShowVideosCubit>(context)
         .showVideos(
-      childDeviceId: widget.childDeviceId,
-      searchKey: searchTerm ?? "",
-    )
+            childDeviceId: widget.childDeviceId,
+            searchKey: searchTerm ?? "",
+            pageNumber: 1)
         .then((onValue) {
       if (mounted) {
         BlocProvider.of<GetContentFiltersCubit>(context)
-            .getContentFilter(childDeviceId: widget.childDeviceId);
+            .getContentFilter(childDeviceId: widget.childDeviceId)
+            .then((onValue) {
+          fetchRemainingTimeFromServer();
+        });
       }
       _refreshController.refreshCompleted();
     }).catchError((error) {
@@ -170,343 +326,425 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
 
   void _onRefresh() {
     loadVideos();
+    currentPage = 1;
+  }
+
+  void onLoading() async {
+    currentPage = currentPage + 1;
+    BlocProvider.of<ShowVideosCubit>(context).showVideos(
+        childDeviceId: widget.childDeviceId,
+        searchKey: "",
+        pageNumber: currentPage,
+        isPagination: true);
+
+    _refreshController.loadComplete();
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    stopLocalTimer();
+
     socket.disconnect();
     socket.dispose();
     _refreshController.dispose();
+    searchController.dispose();
     super.dispose();
+  }
+
+  String formatDuration(Duration duration) {
+    String twoDigits(int n) => n.toString().padLeft(2, "0");
+    final hours = twoDigits(duration.inHours);
+    final minutes = twoDigits(duration.inMinutes.remainder(60));
+    final seconds = twoDigits(duration.inSeconds.remainder(60));
+    return "$hours:$minutes:$seconds";
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.white,
-      appBar: AppBar(
-        toolbarHeight: isSearching ? 90 : 80,
-        title: isSearching
-            ? Padding(
-                padding: const EdgeInsets.only(top: 10),
-                child: TextField(
-                  controller: searchController,
-                  autofocus: true,
-                  onChanged: (value) {
-                    setState(() {
-                      currentSearchTerm = value;
-                    });
-
-                    if (value.isNotEmpty) {
-                      Future.delayed(const Duration(milliseconds: 500), () {
-                        if (currentSearchTerm == value && mounted) {
-                          loadVideos(searchTerm: value);
-                        }
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) => false,
+      child: Scaffold(
+        backgroundColor: AppColors.lightBlue0,
+        appBar: AppBar(
+          toolbarHeight: isSearching ? 90 : 80,
+          title: isSearching
+              ? Padding(
+                  padding: const EdgeInsets.only(top: 10),
+                  child: TextField(
+                    controller: searchController,
+                    autofocus: true,
+                    onChanged: (value) {
+                      setState(() {
+                        currentSearchTerm = value;
                       });
-                    } else {
-                      loadVideos();
-                    }
-                  },
-                  decoration: InputDecoration(
-                    prefixIcon:
-                        const Icon(Icons.search, color: AppColors.black),
-                    suffixIcon: searchController.text.isNotEmpty
-                        ? IconButton(
-                            icon:
-                                const Icon(Icons.clear, color: AppColors.black),
-                            onPressed: () {
-                              searchController.clear();
-                              setState(() {
-                                currentSearchTerm = '';
-                              });
-                              loadVideos();
-                            },
-                          )
-                        : null,
-                    hintText: 'Search videos...',
-                    hintStyle: const TextStyle(color: AppColors.lightBlack),
-                    filled: true,
-                    fillColor: AppColors.lightBlue2.withOpacity(0.1),
-                    contentPadding: const EdgeInsets.symmetric(
-                        vertical: 14, horizontal: 16),
-                    enabledBorder: OutlineInputBorder(
-                      borderSide: const BorderSide(color: AppColors.lightBlue3),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    focusedBorder: OutlineInputBorder(
-                      borderSide: const BorderSide(
-                          color: AppColors.lightBlue3, width: 2),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                  style: const TextStyle(color: AppColors.black, fontSize: 16),
-                ),
-              )
-            : Row(
-                children: [
-                  const Icon(CupertinoIcons.lock_shield_fill),
-                  const SizedBox(width: 5),
-                  TextWidget(
-                    text: "Kids Mode",
-                    fontWeight: FontWeight.bold,
-                    fontSize: 25,
-                  ),
-                  const Spacer(),
-                  if (filters?.allowSearch == true)
-                    GestureDetector(
-                      onTap: () {
-                        setState(() {
-                          isSearching = true;
+
+                      if (value.isNotEmpty) {
+                        Future.delayed(const Duration(milliseconds: 500), () {
+                          if (currentSearchTerm == value && mounted) {
+                            loadVideos(searchTerm: value);
+                          }
                         });
-                      },
-                      child: const Icon(
-                        CupertinoIcons.search,
-                        size: 25,
-                        color: AppColors.black,
+                      } else {
+                        loadVideos();
+                      }
+                    },
+                    decoration: InputDecoration(
+                      prefixIcon:
+                          const Icon(Icons.search, color: AppColors.black),
+                      suffixIcon: searchController.text.isNotEmpty
+                          ? IconButton(
+                              icon: const Icon(Icons.clear,
+                                  color: AppColors.black),
+                              onPressed: () {
+                                searchController.clear();
+                                setState(() {
+                                  currentSearchTerm = '';
+                                });
+                                loadVideos();
+                              },
+                            )
+                          : null,
+                      hintText: 'Search videos...',
+                      hintStyle: const TextStyle(color: AppColors.lightBlack),
+                      filled: true,
+                      fillColor: AppColors.lightBlue2.withOpacity(0.1),
+                      contentPadding: const EdgeInsets.symmetric(
+                          vertical: 14, horizontal: 16),
+                      enabledBorder: OutlineInputBorder(
+                        borderSide:
+                            const BorderSide(color: AppColors.lightBlue3),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderSide: const BorderSide(
+                            color: AppColors.lightBlue3, width: 2),
+                        borderRadius: BorderRadius.circular(12),
                       ),
                     ),
-                  const SizedBox(width: 5),
-                ],
-              ),
-        backgroundColor: AppColors.lightBlue2,
-        scrolledUnderElevation: 0,
-        automaticallyImplyLeading: false,
-        centerTitle: false,
-        actions: isSearching
-            ? [
-                IconButton(
-                  icon: const Icon(Icons.close, color: AppColors.black),
-                  onPressed: () {
-                    setState(() {
-                      isSearching = false;
-                      searchController.clear();
-                      currentSearchTerm = '';
-                    });
-                    loadVideos();
-                  },
-                ),
-              ]
-            : null,
-      ),
-      body: BlocListener<GetContentFiltersCubit, GetContentFiltersState>(
-        listener: (context, state) {
-          isLoading = state is GetContentFiltersLoadingState ? true : false;
-          if (state is GetContentFiltersLoadedState) {
-            filters = state.getContentFilter;
-            setState(() {});
-
-            if (!isLimitReached && remainingSeconds == null) {
-              fetchRemainingTimeFromServer();
-            }
-            if (filters?.isLocked == true) {
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                isChildDeviceLocked();
-              });
-            }
-          }
-        },
-        child: BlocConsumer<ShowVideosCubit, ShowVideosState>(
-          listener: (context, state) {
-            if (state is ShowVideosLoadedState) {
-              videos = state.showVideos.videos;
-            }
-          },
-          builder: (context, state) {
-            if (state is ShowVideosLoadingState) {
-              return const BackgroundGradientColorWiget(
-                child: Center(
-                  child: CircularProgressIndicator(color: AppColors.black),
-                ),
-              );
-            } else if (state is ShowVideosLoadedState) {
-              final videos = state.showVideos.videos ?? [];
-              return BackgroundGradientColorWiget(
-                child: SmartRefresher(
-                  controller: _refreshController,
-                  onRefresh: _onRefresh,
-                  enablePullDown: true,
-                  enablePullUp: false,
-                  header: const ClassicHeader(
-                      idleText: "Pull down to refresh",
-                      releaseText: "Release to refresh",
-                      refreshingText: "Refreshing...",
-                      completeText: "Refresh complete",
-                      failedText: "Refresh failed",
-                      textStyle: TextStyle(color: AppColors.black),
-                      refreshingIcon: JumpingDots()),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const SizedBox(height: 15),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 10),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            TextWidget(
-                              text: isSearching && currentSearchTerm.isNotEmpty
-                                  ? "Search Results"
-                                  : "Your Safe Videos",
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                            ),
-                            isLoading
-                                ? const JumpingDots()
-                                : RichText(
-                                    text: TextSpan(
-                                      text: "Time Left: ",
-                                      style: const TextStyle(
-                                        color: AppColors.black,
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 15,
-                                      ),
-                                      children: [
-                                        TextSpan(
-                                          text: remainingSeconds != null
-                                              ? "${(remainingSeconds! ~/ 60).toString().padLeft(2, '0')}:${(remainingSeconds! % 60).toString().padLeft(2, '0')}"
-                                              : "Loading...",
-                                          style: const TextStyle(
-                                            color: AppColors.red,
-                                            fontWeight: FontWeight.bold,
-                                            fontSize: 15,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                          ],
+                    style:
+                        const TextStyle(color: AppColors.black, fontSize: 16),
+                  ),
+                )
+              : Row(
+                  children: [
+                    const Icon(
+                      MingCute.bear_line,
+                      size: 30,
+                      color: AppColors.black,
+                    ),
+                    const SizedBox(width: 10),
+                    TextWidget(
+                      text: "Kids Mode",
+                      fontWeight: FontWeight.bold,
+                      textColor: AppColors.black,
+                      fontSize: 25,
+                    ),
+                    const Spacer(),
+                    if (filters?.allowSearch == true)
+                      GestureDetector(
+                        onTap: () {
+                          setState(() {
+                            isSearching = true;
+                          });
+                        },
+                        child: const Icon(
+                          MingCute.search_3_line,
+                          size: 30,
+                          color: AppColors.black,
                         ),
                       ),
-                      const SizedBox(height: 15),
-                      Expanded(
-                        child: videos.isEmpty &&
-                                isSearching &&
-                                currentSearchTerm.isNotEmpty
-                            ? Center(
-                                child: TextWidget(
-                                  text:
-                                      "No videos found for '$currentSearchTerm'",
-                                  fontSize: 16,
-                                  textColor: AppColors.charcoalGrey,
-                                ),
-                              )
-                            : videos.isEmpty
-                                ? retryWidget(
-                                    onPress: () {
-                                      loadVideos();
-                                    },
-                                    isError: false,
-                                    errorMessage:
-                                        "No videos available. Please check back later.",
-                                  )
-                                : ListView.builder(
-                                    itemCount: videos.length,
-                                    itemBuilder: (context, index) {
-                                      final video = videos[index];
-                                      return GestureDetector(
-                                        onTap: () {
-                                          final videoIds = videos
-                                              .map((v) => v.videoId)
-                                              .where((id) => id != null)
-                                              .cast<String>()
-                                              .toList();
-
-                 
-                                          Navigator.push(
-                                            context,
-                                            MaterialPageRoute(
-                                              builder: (_) => VideoPlayerWidget(
-                                                videoIds: videoIds,
-                                                startIndex: index,
-                                                isAutoPlayAllowed:
-                                                    filters?.allowAutoplay ??
-                                                        false,
-                                                        videoModel:video,
-                                                        childDeviceId: widget.childDeviceId,
-                                              ),
-                                            ),
-                                          );
-                                        },
-                                        child: Container(
-                                          margin: const EdgeInsets.symmetric(
-                                              vertical: 10, horizontal: 0),
-                                          child: Column(
-                                            crossAxisAlignment:
-                                                CrossAxisAlignment.start,
-                                            children: [
-                                              AspectRatio(
-                                                aspectRatio: 16 / 9,
-                                                child: CachedNetworkImage(
-                                                  imageUrl:
-                                                      video.thumbnail ?? "N/A",
-                                                  fit: BoxFit.cover,
-                                                  placeholder: (context, url) =>
-                                                      const Center(
-                                                    child:
-                                                        CircularProgressIndicator(),
-                                                  ),
-                                                  errorWidget: (context, url,
-                                                          error) =>
-                                                      const Icon(Icons.error),
-                                                ),
-                                              ),
-                                              Padding(
-                                                padding: const EdgeInsets.only(
-                                                    left: 10,
-                                                    top: 10,
-                                                    bottom: 5),
-                                                child: TextWidget(
-                                                  text: video.title ?? "NA",
-                                                  textColor: AppColors.black,
-                                                  fontWeight: FontWeight.bold,
-                                                  fontSize: 15,
-                                                  textOverflow:
-                                                      TextOverflow.ellipsis,
-                                                ),
-                                              ),
-                                              Padding(
-                                                padding: const EdgeInsets.only(
-                                                    left: 10, bottom: 5),
-                                                child: TextWidget(
-                                                  text: video.channel ?? "NA",
-                                                  textColor:
-                                                      AppColors.lightGrey,
-                                                  fontWeight: FontWeight.bold,
-                                                  fontSize: 15,
-                                                  textOverflow:
-                                                      TextOverflow.ellipsis,
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        ),
-                                      );
-                                    },
-                                  ),
-                      ),
-                    ],
-                  ),
+                    const SizedBox(width: 5),
+                  ],
                 ),
-              );
-            } else if (state is ShowVideosErrorState) {
-             
-              return retryWidget(
-                  onPress: () {
-                    loadVideos();
-                  },
-                  errorMessage: "Error loading Videos...");
-            } else {
-              return retryWidget(
-                  onPress: () {
-                    loadVideos();
-                  },
-                  errorMessage: "Something went wrong");
+          backgroundColor: AppColors.lightBlue2,
+          scrolledUnderElevation: 0,
+          automaticallyImplyLeading: false,
+          centerTitle: false,
+          actions: isSearching && searchController.text.isEmpty
+              ? [
+                  IconButton(
+                    icon: const Icon(Icons.close, color: AppColors.black),
+                    onPressed: () {
+                      setState(() {
+                        isSearching = false;
+                        searchController.clear();
+                        currentSearchTerm = '';
+                      });
+                      loadVideos();
+                    },
+                  ),
+                ]
+              : null,
+        ),
+        body: BlocListener<GetContentFiltersCubit, GetContentFiltersState>(
+          listener: (context, state) {
+            isLoading = state is GetContentFiltersLoadingState ? true : false;
+            if (state is GetContentFiltersLoadedState) {
+              filters = state.getContentFilter;
+              // setState(() {});
+              // if (filters?.screenTimeLimitMins != null) {
+              //   if (_lastScreenTimeLimitMins != filters?.screenTimeLimitMins) {
+              //     log("initializeTimer......")
+              //     initializeTimer(filters!);
+              //     _lastScreenTimeLimitMins = filters?.screenTimeLimitMins;
+              //   }
+              // }
+
+              if (filters?.isLocked == true) {
+                showLockDialogIfNotShown();
+              }
             }
           },
+          child: BlocConsumer<ShowVideosCubit, ShowVideosState>(
+            listener: (context, state) {
+              if (state is ShowVideosLoadedState) {
+                final newVideos = state.showVideos.videos;
+
+                if (currentPage == 1) {
+                  videos = newVideos ?? [];
+                } else {
+                  videos?.addAll(newVideos!.toSet());
+                }
+                log("noSettingsDialogShowing.........$noSettingsDialogShowing");
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (noSettingsDialogShowing &&
+                      Navigator.of(context, rootNavigator: true).canPop()) {
+                    log("poppppp...................");
+                    Navigator.of(context, rootNavigator: true).pop();
+                    setState(() => noSettingsDialogShowing = false);
+                  }
+                });
+              } else if (state is ChildSettingsUnsetState) {
+                log("inside ChildSettingsUnsetState ");
+                if (!noSettingsDialogShowing) {
+                  showNoSettingsPopup();
+                  setState(() => noSettingsDialogShowing = true);
+                }
+              }
+            },
+            builder: (context, state) {
+              if (state is ShowVideosLoadingState) {
+                return const Center(
+                  child: CircularProgressIndicator(color: AppColors.black),
+                );
+              } else if (state is ShowVideosLoadedState) {
+                return buildVideoList();
+              } else if (state is ShowVideosEmptyState) {
+                return retryWidget(
+                    onPress: () {
+                      loadVideos();
+                    },
+                    errorMessage: state.emptyMessage);
+              } else if (state is ShowVideosErrorState) {
+                return retryWidget(
+                    onPress: () {
+                      loadVideos();
+                    },
+                    errorMessage: state.errorMessage);
+              } else {
+                return retryWidget(
+                    onPress: () {
+                      loadVideos();
+                    },
+                    errorMessage: "Something went wrong");
+              }
+            },
+          ),
         ),
       ),
+    );
+  }
+
+  Column buildVideoList() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 15),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              TextWidget(
+                text: isSearching && currentSearchTerm.isNotEmpty
+                    ? "Search Results"
+                    : "Your Safe Videos",
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+              isLoading
+                  ? const JumpingDots()
+                  : RichText(
+                      text: TextSpan(
+                        text: "Time Left: ",
+                        style: const TextStyle(
+                          color: AppColors.black,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 15,
+                        ),
+                        children: [
+                          TextSpan(
+                            text: remainingTime != null
+                                ? formatDuration(remainingTime!)
+                                : "Loading...",
+                            style: const TextStyle(
+                              color: AppColors.red,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 15,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 15),
+        Expanded(
+          child: videos == null && isSearching && currentSearchTerm.isNotEmpty
+              ? Center(
+                  child: TextWidget(
+                    text: "No videos found for '$currentSearchTerm'",
+                    fontSize: 16,
+                    textColor: AppColors.charcoalGrey,
+                  ),
+                )
+              : videos == null
+                  ? retryWidget(
+                      onPress: () {
+                        loadVideos();
+                      },
+                      isError: false,
+                      errorMessage:
+                          "No videos available. Please check back later.",
+                    )
+                  : SmartRefresher(
+                      controller: _refreshController,
+                      onRefresh: _onRefresh,
+                      enablePullDown: true,
+                      onLoading: onLoading,
+                      enablePullUp: hasMore,
+                      footer: CustomFooter(
+                        height: 45,
+                        builder: (BuildContext context, LoadStatus? mode) {
+                          Widget body;
+                          if (mode == LoadStatus.idle) {
+                            body = const Center(
+                                child: Center(
+                              child: Text("Pull up to load more data"),
+                            ));
+                            return body;
+                          } else if (mode == LoadStatus.noMore) {
+                            body = const Center(child: Text("No more data"));
+                            return body;
+                          } else if (mode == LoadStatus.loading) {
+                            body = const Center(
+                              child: SizedBox(
+                                width: 40,
+                                child: CircularProgressIndicator(
+                                  color: AppColors.black,
+                                ),
+                              ),
+                            );
+                            return body;
+                          } else if (mode == LoadStatus.failed) {
+                            body = const Center(
+                              child: Text("Load failed! Click retry!"),
+                            );
+                            return body;
+                          } else if (mode == LoadStatus.canLoading) {
+                            body = const Center(
+                              child: Text("Release to load more"),
+                            );
+                            return body;
+                          } else {
+                            body = const Center(
+                              child: Text("No more data"),
+                            );
+                            return body;
+                          }
+                        },
+                      ),
+                      header: const ClassicHeader(),
+                      child: ListView.builder(
+                        itemCount: videos?.length,
+                        itemBuilder: (context, index) {
+                          final video = videos?[index];
+                          return GestureDetector(
+                            onTap: () {
+                              final videoIds = video != null
+                                  ? videos!
+                                      .map((v) => v.videoId)
+                                      .where((id) => id != null)
+                                      .cast<String>()
+                                      .toList()
+                                  : [""];
+
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => VideoPlayerWidget(
+                                    videoIds: videoIds,
+                                    startIndex: index,
+                                    isAutoPlayAllowed:
+                                        filters?.allowAutoplay ?? false,
+                                    videoModel: video!,
+                                    childDeviceId: widget.childDeviceId,
+                                  ),
+                                ),
+                              );
+                            },
+                            child: Container(
+                              margin: const EdgeInsets.symmetric(
+                                  vertical: 10, horizontal: 0),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  AspectRatio(
+                                    aspectRatio: 16 / 8,
+                                    child: CachedNetworkImage(
+                                      imageUrl: video?.thumbnail ?? "N/A",
+                                      fit: BoxFit.cover,
+                                      placeholder: (context, url) =>
+                                          const Center(
+                                        child: CircularProgressIndicator(),
+                                      ),
+                                      errorWidget: (context, url, error) =>
+                                          const Icon(Icons.error),
+                                    ),
+                                  ),
+                                  Padding(
+                                    padding: const EdgeInsets.only(
+                                        left: 10, top: 10, bottom: 5),
+                                    child: TextWidget(
+                                      text: video?.title ?? "NA",
+                                      textColor: AppColors.black,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 15,
+                                      textOverflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                  Padding(
+                                    padding: const EdgeInsets.only(
+                                        left: 10, bottom: 5),
+                                    child: TextWidget(
+                                      text: video?.channel ?? "NA",
+                                      textColor: AppColors.lightGrey,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 15,
+                                      textOverflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+        ),
+      ],
     );
   }
 
@@ -542,6 +780,29 @@ class _ChildHomeScreenState extends State<ChildHomeScreen>
                   ),
                 ],
               ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  showNoSettingsPopup() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return PopScope(
+          canPop: false,
+          onPopInvokedWithResult: (didPop, result) => false,
+          child: AlertDialog(
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: TextWidget(
+                text: "Waiting for Settings ", fontWeight: FontWeight.bold),
+            content: TextWidget(
+              text:
+                  "Your parent has not set any screen time or content settings yet. Please wait until setup is complete.",
             ),
           ),
         );
